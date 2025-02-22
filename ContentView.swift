@@ -3,10 +3,16 @@ import Foundation
 import Combine
 
 // MARK: - Models
-struct Repository: Identifiable {
-    let id = UUID()
+struct Repository: Identifiable, Codable {
+    var id: UUID
     let path: String
-    var commitCount: Int = 0
+    var isEnabled: Bool = true
+    
+    init(id: UUID = UUID(), path: String, isEnabled: Bool = true) {
+        self.id = id
+        self.path = path
+        self.isEnabled = isEnabled
+    }
 }
 
 struct CommitStatistics {
@@ -16,8 +22,7 @@ struct CommitStatistics {
     var commitHistory: [Date] = []
 }
 
-// Структура для логов с уникальным ID
-struct LogEntry: Identifiable {
+struct LogEntry: Identifiable, Codable {
     let id: String
     let message: String
 }
@@ -27,29 +32,41 @@ class GitManager: ObservableObject {
     @Published var repositories: [Repository] = []
     @Published var stats = CommitStatistics()
     @Published var isProcessing = false
-    @Published var logs: [LogEntry] = []  // Изменён тип на [LogEntry]
+    @Published var logs: [LogEntry] = []
     
     private let fileManager = FileManager.default
-    private var processingTask: Task<Void, Never>? // Для отслеживания текущей задачи
+    private var processingTask: Task<Void, Never>?
+    
+    private let repositoriesKey = "savedRepositories"
     
     init() {
         loadRepositories()
+        loadSavedRepositories()
     }
     
     func loadRepositories() {
-        // Пример путей к репозиториям (можно заменить на выбор через UI)
-        let paths = [
-            "/Users/s2xdeb/Desktop/g/и/SQL-50-LeetCode",
-            "/Users/s2xdeb/Desktop/ed_g/pythhon"
-        ]
-        repositories = paths.compactMap { path in
-            if fileManager.fileExists(atPath: path) {
-                addLog("Repository path exists: \(path)")
-                return Repository(path: path)
-            } else {
-                addLog("Repository path does not exist: \(path)")
-                return nil
-            }
+        loadSavedRepositories()
+    }
+    
+    func loadSavedRepositories() {
+        if let data = UserDefaults.standard.data(forKey: repositoriesKey),
+           let savedRepos = try? JSONDecoder().decode([Repository].self, from: data) {
+            repositories = savedRepos
+            addLog("Loaded saved repositories: \(savedRepos.map { $0.path })")
+        } else {
+            addLog("No saved repositories found, using default paths")
+            let defaultPaths = [
+                "/Users/s2xdeb/Desktop/g/и/SQL-50-LeetCode",
+                "/Users/s2xdeb/Desktop/ed_g/pythhon"
+            ]
+            repositories = defaultPaths.map { Repository(path: $0) }
+            saveRepositories()
+        }
+    }
+    
+    func saveRepositories() {
+        if let data = try? JSONEncoder().encode(repositories) {
+            UserDefaults.standard.set(data, forKey: repositoriesKey)
         }
     }
     
@@ -103,11 +120,10 @@ class GitManager: ObservableObject {
     
     func gitCommit(repoPath: String, message: String) -> Bool {
         do {
-            // Рекурсивно найти все поддерживаемые файлы
             let supportedExts: Set<String> = [".py", ".sql", ".cpp", ".hpp", ".cxx", ".h", ".kt", ".kts", ".swift"]
             let allFiles = try findFiles(in: repoPath, withExtensions: supportedExts)
             
-            addLog("Found files in \(repoPath): \(allFiles)")  // Дополнительное логирование
+            addLog("Found files in \(repoPath): \(allFiles)")
             guard !allFiles.isEmpty else {
                 addLog("No supported files found in \(repoPath)")
                 return false
@@ -120,7 +136,6 @@ class GitManager: ObservableObject {
             
             guard makeMinimalChange(to: fileToChange) else { return false }
             
-            // Git operations с созданием нового Process для каждой команды
             let commands = [
                 ["git", "add", "."],
                 ["git", "commit", "-m", message],
@@ -165,7 +180,6 @@ class GitManager: ObservableObject {
     }
     
     func processRepositories(totalCommits: Int?) {
-        // Предотвращаем повторные запуски, если задача уже выполняется
         guard !isProcessing else {
             addLog("Processing already in progress, please wait...")
             return
@@ -175,47 +189,39 @@ class GitManager: ObservableObject {
         processingTask = Task { [weak self] in
             guard let self = self else { return }
             
-            do {
-                let availableRepos = self.repositories.filter { self.checkAccess(path: $0.path) }
-                guard !availableRepos.isEmpty else {
-                    DispatchQueue.main.async {
-                        self.addLog("No accessible repositories found")
-                        self.isProcessing = false
-                    }
-                    return
-                }
-                
-                let commitCount = totalCommits ?? Int.random(in: 1...50)
-                var remainingCommits = commitCount
-                
-                for repo in availableRepos.shuffled() {
-                    let commitsThisRepo = min(remainingCommits, Int.random(in: 1...remainingCommits))
-                    remainingCommits -= commitsThisRepo
-                    
-                    for _ in 0..<commitsThisRepo {
-                        let message = self.getRealisticCommitMessage()
-                        if self.gitCommit(repoPath: repo.path, message: message) {
-                            DispatchQueue.main.async {
-                                self.stats.totalCommits += 1
-                            }
-                        }
-                    }
-                    
-                    if remainingCommits <= 0 { break }
-                }
-                
+            let availableRepos = self.repositories.filter { $0.isEnabled && self.checkAccess(path: $0.path) }
+            guard !availableRepos.isEmpty else {
                 DispatchQueue.main.async {
-                    self.isProcessing = false
-                    self.addLog("Processing completed. Total commits: \(self.stats.totalCommits)")
-                }
-            } catch {
-                DispatchQueue.main.async {
-                    self.addLog("Error processing repositories: \(error.localizedDescription)")
+                    self.addLog("No accessible repositories found")
                     self.isProcessing = false
                 }
+                return
             }
             
-            // Очистка задачи после завершения
+            let commitCount = totalCommits ?? Int.random(in: 1...50)
+            var remainingCommits = commitCount
+            
+            for repo in availableRepos.shuffled() {
+                let commitsThisRepo = min(remainingCommits, Int.random(in: 1...remainingCommits))
+                remainingCommits -= commitsThisRepo
+                
+                for _ in 0..<commitsThisRepo {
+                    let message = self.getRealisticCommitMessage()
+                    if self.gitCommit(repoPath: repo.path, message: message) {
+                        DispatchQueue.main.async {
+                            self.stats.totalCommits += 1
+                        }
+                    }
+                }
+                
+                if remainingCommits <= 0 { break }
+            }
+            
+            DispatchQueue.main.async {
+                self.isProcessing = false
+                self.addLog("Processing completed. Total commits: \(self.stats.totalCommits)")
+            }
+            
             self.processingTask = nil
         }
     }
@@ -285,12 +291,36 @@ class GitManager: ObservableObject {
         }
     }
     
-    // Метод для отмены текущей задачи (если нужно)
     func cancelProcessing() {
         processingTask?.cancel()
         processingTask = nil
         isProcessing = false
         addLog("Processing cancelled by user")
+    }
+    
+    func addRepository(path: String) {
+        if !repositories.contains(where: { $0.path == path }) {
+            let newRepo = Repository(path: path, isEnabled: true)
+            repositories.append(newRepo)
+            saveRepositories()
+            addLog("Added new repository: \(path)")
+        } else {
+            addLog("Repository already exists: \(path)")
+        }
+    }
+    
+    func toggleRepository(_ repo: Repository) {
+        if let index = repositories.firstIndex(where: { $0.id == repo.id }) {
+            repositories[index].isEnabled.toggle()
+            saveRepositories()
+            addLog("Toggled repository \(repo.path) to \(repositories[index].isEnabled ? "enabled" : "disabled")")
+        }
+    }
+    
+    func removeRepository(_ repo: Repository) {
+        repositories.removeAll { $0.id == repo.id }
+        saveRepositories()
+        addLog("Removed repository: \(repo.path)")
     }
 }
 
@@ -298,32 +328,35 @@ class GitManager: ObservableObject {
 struct ContentView: View {
     @StateObject private var gitManager = GitManager()
     @State private var commitCount: String = ""
+    @State private var newRepoPath: String = ""
     @State private var showResetAlert = false
     
     var body: some View {
-        NavigationView {
+        NavigationSplitView {
+            // Левая часть: основное содержимое
             VStack(spacing: 20) {
-                // Header
                 Text("Git Commit Simulator")
-                    .font(.system(size: 28, weight: .bold, design: .rounded))
-                    .foregroundColor(.primary)
+                    .font(.system(size: 32, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white)
+                    .shadow(color: .black.opacity(0.2), radius: 5, x: 0, y: 2)
                 
-                // Stats
-                StatsView(stats: gitManager.stats)
+                StatsView(stats: gitManager.stats)  // Убедились, что StatsView определён
+                    .padding(.horizontal)
                 
-                // Controls
                 VStack(spacing: 15) {
                     TextField("Number of commits (optional)", text: $commitCount)
                         .textFieldStyle(.roundedBorder)
                         .frame(maxWidth: 200)
+                        .padding(.horizontal)
                     
                     Button(action: startProcessing) {
                         Text(gitManager.isProcessing ? "Processing..." : "Start Commits")
                             .frame(maxWidth: .infinity)
                             .padding()
-                            .background(Color.blue)
+                            .background(gitManager.isProcessing ? Color.blue.opacity(0.7) : Color.blue)
                             .foregroundColor(.white)
-                            .cornerRadius(10)
+                            .cornerRadius(12)
+                            .shadow(color: .blue.opacity(0.3), radius: 5, x: 0, y: 2)
                     }
                     .disabled(gitManager.isProcessing)
                     
@@ -333,11 +366,11 @@ struct ContentView: View {
                             .padding()
                             .background(Color.red.opacity(0.8))
                             .foregroundColor(.white)
-                            .cornerRadius(10)
+                            .cornerRadius(12)
+                            .shadow(color: .red.opacity(0.3), radius: 5, x: 0, y: 2)
                     }
                     .disabled(gitManager.isProcessing || gitManager.stats.totalCommits == 0)
                     
-                    // Добавлена кнопка для отмены, если нужно
                     if gitManager.isProcessing {
                         Button(action: gitManager.cancelProcessing) {
                             Text("Cancel Processing")
@@ -345,29 +378,95 @@ struct ContentView: View {
                                 .padding()
                                 .background(Color.yellow)
                                 .foregroundColor(.black)
-                                .cornerRadius(10)
+                                .cornerRadius(12)
+                                .shadow(color: .yellow.opacity(0.3), radius: 5, x: 0, y: 2)
                         }
                     }
                 }
                 .padding(.horizontal)
                 
-                // Logs
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 8) {
+                    LazyVStack(alignment: .leading, spacing: 8) {
                         ForEach(gitManager.logs.reversed(), id: \.id) { logEntry in
                             Text(logEntry.message)
                                 .font(.system(.caption, design: .monospaced))
                                 .foregroundColor(.gray)
+                                .padding(.horizontal, 10)
                         }
                     }
+                    .padding(.vertical, 8)
                 }
                 .frame(maxHeight: 200)
                 .background(Color.gray.opacity(0.1))
-                .cornerRadius(8)
+                .cornerRadius(12)
                 .padding(.horizontal)
+                .shadow(color: .gray.opacity(0.2), radius: 5, x: 0, y: 2)
             }
             .padding()
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(LinearGradient(gradient: Gradient(colors: [.blue.opacity(0.1), .black]), startPoint: .top, endPoint: .bottom))
             .navigationTitle("Dashboard")
+        } detail: {
+            // Правая часть: управление репозиториями
+            VStack(spacing: 20) {
+                Text("Repository Manager")
+                    .font(.system(size: 24, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white)
+                    .shadow(color: .black.opacity(0.2), radius: 5, x: 0, y: 2)
+                
+                VStack(spacing: 15) {
+                    TextField("Enter repository path", text: $newRepoPath)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: 300)
+                        .padding(.horizontal)
+                    
+                    Button(action: addRepository) {
+                        Text("Add Repository")
+                            .frame(maxWidth: .infinity)
+                            .padding()
+                            .background(Color.green)
+                            .foregroundColor(.white)
+                            .cornerRadius(12)
+                            .shadow(color: .green.opacity(0.3), radius: 5, x: 0, y: 2)
+                    }
+                    .disabled(newRepoPath.isEmpty)
+                }
+                
+                List {
+                    ForEach(gitManager.repositories) { repo in
+                        HStack {
+                            Toggle(isOn: Binding(
+                                get: { repo.isEnabled },
+                                set: { _ in gitManager.toggleRepository(repo) }
+                            )) {
+                                Text(repo.path)
+                                    .lineLimit(1)
+                                    .truncationMode(.tail)
+                            }
+                            .toggleStyle(.switch)
+                            .padding(.vertical, 4)
+                            
+                            Spacer()
+                            
+                            Button(action: { gitManager.removeRepository(repo) }) {
+                                Image(systemName: "trash")
+                                    .foregroundColor(.red)
+                                    .padding(8)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        .padding(.horizontal)
+                    }
+                }
+                .listStyle(.inset)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color.gray.opacity(0.1))
+                .cornerRadius(12)
+                .shadow(color: .gray.opacity(0.2), radius: 5, x: 0, y: 2)
+            }
+            .padding()
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(LinearGradient(gradient: Gradient(colors: [.purple.opacity(0.1), .black]), startPoint: .top, endPoint: .bottom))
         }
         .alert(isPresented: $showResetAlert) {
             Alert(
@@ -394,8 +493,14 @@ struct ContentView: View {
         }
         gitManager.stats = CommitStatistics()
     }
+    
+    private func addRepository() {
+        gitManager.addRepository(path: newRepoPath.trimmingCharacters(in: .whitespaces))
+        newRepoPath = ""
+    }
 }
 
+// MARK: - Stats View (переместил сюда для видимости)
 struct StatsView: View {
     let stats: CommitStatistics
     
@@ -410,31 +515,33 @@ struct StatsView: View {
         .padding()
         .background(Color.blue.opacity(0.1))
         .cornerRadius(12)
+        .shadow(color: .blue.opacity(0.3), radius: 5, x: 0, y: 2)
     }
-}
-
-struct StatRow: View {
-    let title: String
-    let value: String
     
-    var body: some View {
-        HStack {
-            Text(title)
-                .foregroundColor(.gray)
-            Spacer()
-            Text(value)
-                .fontWeight(.semibold)
+    struct StatRow: View {
+        let title: String
+        let value: String
+        
+        var body: some View {
+            HStack {
+                Text(title)
+                    .foregroundColor(.gray)
+                Spacer()
+                Text(value)
+                    .fontWeight(.semibold)
+                    .foregroundColor(.white)
+            }
         }
     }
-}
-
-// MARK: - App
-@main  // Убедился, что это единственное место с @main в модуле
-struct GitCommitSimulatorApp: App {  // Сохранил уникальное имя
-    var body: some Scene {
-        WindowGroup {
-            ContentView()
-                .frame(minWidth: 600, minHeight: 400)
+    
+    // MARK: - App
+    @main
+    struct GitCommitSimulatorApp: App {
+        var body: some Scene {
+            WindowGroup {
+                ContentView()
+                    .frame(minWidth: 800, minHeight: 600)
+            }
         }
     }
 }
