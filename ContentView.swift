@@ -41,7 +41,6 @@ class GitManager: ObservableObject {
     
     init() {
         loadRepositories()
-        loadSavedRepositories()
     }
     
     func loadRepositories() {
@@ -54,12 +53,8 @@ class GitManager: ObservableObject {
             repositories = savedRepos
             addLog("Loaded saved repositories: \(savedRepos.map { $0.path })")
         } else {
-            addLog("No saved repositories found, using default paths")
-            let defaultPaths = [
-                "/Users/s2xdeb/Desktop/g/и/SQL-50-LeetCode",
-                "/Users/s2xdeb/Desktop/ed_g/pythhon"
-            ]
-            repositories = defaultPaths.map { Repository(path: $0) }
+            addLog("No saved repositories found, starting with empty list")
+            repositories = []  // Начинаем с пустого списка
             saveRepositories()
         }
     }
@@ -299,13 +294,32 @@ class GitManager: ObservableObject {
     }
     
     func addRepository(path: String) {
-        if !repositories.contains(where: { $0.path == path }) {
-            let newRepo = Repository(path: path, isEnabled: true)
+        // Проверка валидности пути и статуса Git-репозитория
+        guard !path.trimmingCharacters(in: .whitespaces).isEmpty else {
+            addLog("Repository path cannot be empty")
+            return
+        }
+        
+        let trimmedPath = path.trimmingCharacters(in: .whitespaces)
+        guard fileManager.fileExists(atPath: trimmedPath) else {
+            addLog("Repository path does not exist: \(trimmedPath)")
+            return
+        }
+        
+        // Проверка, является ли директория Git-репозиторием
+        let gitPath = (trimmedPath as NSString).appendingPathComponent(".git")
+        guard fileManager.fileExists(atPath: gitPath) else {
+            addLog("Path is not a Git repository: \(trimmedPath)")
+            return
+        }
+        
+        if !repositories.contains(where: { $0.path == trimmedPath }) {
+            let newRepo = Repository(path: trimmedPath, isEnabled: true)
             repositories.append(newRepo)
             saveRepositories()
-            addLog("Added new repository: \(path)")
+            addLog("Added new repository: \(trimmedPath)")
         } else {
-            addLog("Repository already exists: \(path)")
+            addLog("Repository already exists: \(trimmedPath)")
         }
     }
     
@@ -339,15 +353,16 @@ struct ContentView: View {
                     .font(.system(size: 32, weight: .bold, design: .rounded))
                     .foregroundStyle(.white)
                     .shadow(color: .black.opacity(0.2), radius: 5, x: 0, y: 2)
+                    .padding(.leading, 20) // Сдвиг текста ближе к центру
                 
-                StatsView(stats: gitManager.stats)  // Убедились, что StatsView определён
-                    .padding(.horizontal)
+                StatsView(stats: gitManager.stats)
+                    .padding(.horizontal, 20) // Увеличил отступ для выравнивания
                 
                 VStack(spacing: 15) {
                     TextField("Number of commits (optional)", text: $commitCount)
                         .textFieldStyle(.roundedBorder)
                         .frame(maxWidth: 200)
-                        .padding(.horizontal)
+                        .padding(.horizontal, 20)
                     
                     Button(action: startProcessing) {
                         Text(gitManager.isProcessing ? "Processing..." : "Start Commits")
@@ -359,6 +374,7 @@ struct ContentView: View {
                             .shadow(color: .blue.opacity(0.3), radius: 5, x: 0, y: 2)
                     }
                     .disabled(gitManager.isProcessing)
+                    .padding(.horizontal, 20)
                     
                     Button(action: { showResetAlert = true }) {
                         Text("Reset Changes")
@@ -370,6 +386,7 @@ struct ContentView: View {
                             .shadow(color: .red.opacity(0.3), radius: 5, x: 0, y: 2)
                     }
                     .disabled(gitManager.isProcessing || gitManager.stats.totalCommits == 0)
+                    .padding(.horizontal, 20)
                     
                     if gitManager.isProcessing {
                         Button(action: gitManager.cancelProcessing) {
@@ -381,9 +398,9 @@ struct ContentView: View {
                                 .cornerRadius(12)
                                 .shadow(color: .yellow.opacity(0.3), radius: 5, x: 0, y: 2)
                         }
+                        .padding(.horizontal, 20)
                     }
                 }
-                .padding(.horizontal)
                 
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 8) {
@@ -399,7 +416,7 @@ struct ContentView: View {
                 .frame(maxHeight: 200)
                 .background(Color.gray.opacity(0.1))
                 .cornerRadius(12)
-                .padding(.horizontal)
+                .padding(.horizontal, 20)
                 .shadow(color: .gray.opacity(0.2), radius: 5, x: 0, y: 2)
             }
             .padding()
@@ -413,6 +430,11 @@ struct ContentView: View {
                     .font(.system(size: 24, weight: .bold, design: .rounded))
                     .foregroundStyle(.white)
                     .shadow(color: .black.opacity(0.2), radius: 5, x: 0, y: 2)
+                
+                Text("Add your Git repositories here to start committing")
+                    .font(.system(size: 14, weight: .regular, design: .rounded))
+                    .foregroundColor(.gray)
+                    .padding(.horizontal)
                 
                 VStack(spacing: 15) {
                     TextField("Enter repository path", text: $newRepoPath)
@@ -500,7 +522,7 @@ struct ContentView: View {
     }
 }
 
-// MARK: - Stats View (переместил сюда для видимости)
+// MARK: - Stats View
 struct StatsView: View {
     let stats: CommitStatistics
     
